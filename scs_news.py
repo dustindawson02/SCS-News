@@ -1,13 +1,19 @@
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
-import feedparser
 import requests
+from bs4 import BeautifulSoup
 
-FEED_URL = "https://blog.scssoft.com/feeds/posts/default?alt=rss"
+BLOG_URL = "https://blog.scssoft.com/"
 STATE_FILE = Path("last_scs_post.json")
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
+
+
+def clean_link(link):
+    parts = urlsplit(link)
+    return urlunsplit(("https", parts.netloc, parts.path, "", ""))
 
 
 def post_to_discord(title, link):
@@ -21,48 +27,64 @@ def post_to_discord(title, link):
     response.raise_for_status()
 
 
-feed = feedparser.parse(FEED_URL)
+response = requests.get(
+    BLOG_URL,
+    headers={"User-Agent": "SCS Discord News Bot"},
+    timeout=30
+)
+response.raise_for_status()
 
-if not feed.entries:
-    raise RuntimeError("No SCS articles were found.")
+soup = BeautifulSoup(response.text, "html.parser")
+post_links = soup.select("h3.post-title.entry-title a")
+
+articles = []
+
+for post_link in post_links:
+    title = post_link.get_text(" ", strip=True)
+    link = clean_link(post_link["href"])
+    articles.append({"title": title, "link": link})
+
+if not articles:
+    raise RuntimeError("No articles were found on the SCS homepage.")
 
 saved_link = None
 
 if STATE_FILE.exists():
     saved_data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    saved_link = saved_data.get("last_link")
+    if saved_data.get("last_link"):
+        saved_link = clean_link(saved_data["last_link"])
 
 if saved_link is None:
-    # On the first run, only post the newest article.
-    newest = feed.entries[0]
-    post_to_discord(newest.title, newest.link)
-    posted_count = 1
+    new_articles = [articles[0]]
 else:
     new_articles = []
+    found_saved_article = False
 
-    for article in feed.entries:
-        if article.link == saved_link:
+    for article in articles:
+        if article["link"] == saved_link:
+            found_saved_article = True
             break
 
         new_articles.append(article)
 
-    # Post oldest first if several articles are new.
-    for article in reversed(new_articles):
-        post_to_discord(article.title, article.link)
+    # Prevent many old homepage posts from being sent if state is missing.
+    if not found_saved_article:
+        new_articles = [articles[0]]
 
-    posted_count = len(new_articles)
+for article in reversed(new_articles):
+    post_to_discord(article["title"], article["link"])
 
-latest = feed.entries[0]
+latest = articles[0]
 
 STATE_FILE.write_text(
     json.dumps(
         {
-            "last_link": latest.link,
-            "last_title": latest.title
+            "last_link": latest["link"],
+            "last_title": latest["title"]
         },
         indent=2
     ),
     encoding="utf-8"
 )
 
-print(f"Posted {posted_count} new SCS article(s).")
+print(f"Posted {len(new_articles)} new SCS article(s).")
