@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install requirements
-        run: pip install feedparser requests
+        run: pip install requests beautifulsoup4
 
       - name: Check SCS blog
         env:
