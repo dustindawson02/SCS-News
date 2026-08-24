@@ -4,9 +4,11 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-from bs4 import BeautifulSoup
 
-BLOG_URL = "https://blog.scssoft.com/"
+FEED_URL = (
+    "https://blog.scssoft.com/feeds/posts/default"
+    "?alt=json&max-results=10&orderby=published"
+)
 STATE_FILE = Path("last_scs_post.json")
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
@@ -28,29 +30,40 @@ def post_to_discord(title, link):
 
 
 response = requests.get(
-    BLOG_URL,
-    headers={"User-Agent": "SCS Discord News Bot"},
+    FEED_URL,
+    headers={
+        "User-Agent": "SCS-Discord-News/1.0",
+        "Accept": "application/json"
+    },
     timeout=30
 )
 response.raise_for_status()
 
-soup = BeautifulSoup(response.text, "html.parser")
-post_links = soup.select("h3.post-title.entry-title a")
-
+entries = response.json()["feed"].get("entry", [])
 articles = []
 
-for post_link in post_links:
-    title = post_link.get_text(" ", strip=True)
-    link = clean_link(post_link["href"])
-    articles.append({"title": title, "link": link})
+for entry in entries:
+    title = entry["title"]["$t"].strip()
+
+    link = next(
+        item["href"]
+        for item in entry["link"]
+        if item.get("rel") == "alternate"
+    )
+
+    articles.append({
+        "title": title,
+        "link": clean_link(link)
+    })
 
 if not articles:
-    raise RuntimeError("No articles were found on the SCS homepage.")
+    raise RuntimeError("No SCS articles were found.")
 
 saved_link = None
 
 if STATE_FILE.exists():
     saved_data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+
     if saved_data.get("last_link"):
         saved_link = clean_link(saved_data["last_link"])
 
@@ -67,7 +80,6 @@ else:
 
         new_articles.append(article)
 
-    # Prevent many old homepage posts from being sent if state is missing.
     if not found_saved_article:
         new_articles = [articles[0]]
 
